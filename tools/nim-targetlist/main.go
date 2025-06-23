@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -49,6 +50,7 @@ type TargetScanner struct {
 	verifyAll      bool
 	skipVerify     bool
 	hardcodedOnly  bool
+	selfOnly       bool
 	timeout        time.Duration
 	nimAvailable   bool
 }
@@ -89,6 +91,70 @@ func NewTargetScanner() *TargetScanner {
 		},
 		timeout: 30 * time.Second,
 	}
+}
+
+func (ts *TargetScanner) getHostTarget() (string, string) {
+	// Get host OS
+	var hostOS string
+	switch runtime.GOOS {
+	case "darwin":
+		hostOS = "macosx"
+	case "linux":
+		hostOS = "linux"
+	case "windows":
+		hostOS = "windows"
+	case "freebsd":
+		hostOS = "freebsd"
+	case "openbsd":
+		hostOS = "openbsd"
+	case "netbsd":
+		hostOS = "netbsd"
+	case "dragonfly":
+		hostOS = "dragonfly"
+	case "solaris":
+		hostOS = "solaris"
+	case "android":
+		hostOS = "android"
+	case "plan9":
+		hostOS = "plan9"
+	default:
+		hostOS = runtime.GOOS
+	}
+	
+	// Get host CPU
+	var hostCPU string
+	switch runtime.GOARCH {
+	case "386":
+		hostCPU = "i386"
+	case "amd64":
+		hostCPU = "amd64"
+	case "arm":
+		hostCPU = "arm"
+	case "arm64":
+		hostCPU = "arm64"
+	case "mips":
+		hostCPU = "mips"
+	case "mips64":
+		hostCPU = "mips64"
+	case "mips64le":
+		hostCPU = "mips64el"
+	case "mipsle":
+		hostCPU = "mipsel"
+	case "ppc64":
+		hostCPU = "powerpc64"
+	case "ppc64le":
+		hostCPU = "powerpc64el"
+	case "riscv64":
+		hostCPU = "riscv64"
+	case "s390x":
+		hostCPU = "s390x"
+	case "wasm":
+		hostCPU = "wasm32"
+	default:
+		hostCPU = runtime.GOARCH
+	}
+	
+	return hostOS, hostCPU
 }
 
 func (ts *TargetScanner) checkNimAvailable() bool {
@@ -279,6 +345,24 @@ func (ts *TargetScanner) scanTargets() []TargetInfo {
 	osSet := make(map[string]string) // os -> source
 	cpuSet := make(map[string]string) // cpu -> source
 	
+	// If self-only mode, just return the host target
+	if ts.selfOnly {
+		hostOS, hostCPU := ts.getHostTarget()
+		log.Printf("Host target detected: OS=%s, CPU=%s", hostOS, hostCPU)
+		
+		source := "hardcoded"
+		if !ts.hardcodedOnly && ts.nimAvailable {
+			source = "detected"
+		}
+		
+		return []TargetInfo{{
+			OS:      hostOS,
+			CPU:     hostCPU,
+			Source:  source,
+			Command: fmt.Sprintf("nim --os:%s --cpu:%s", hostOS, hostCPU),
+		}}
+	}
+	
 	// Check if nim is available
 	ts.nimAvailable = ts.checkNimAvailable()
 	
@@ -353,6 +437,7 @@ func (ts *TargetScanner) scanTargets() []TargetInfo {
 }
 
 func (ts *TargetScanner) verifyTargets(targets []TargetInfo) []TargetInfo {
+	// Skip verification if explicitly disabled, nim not available, or hardcoded-only mode
 	if ts.skipVerify || !ts.nimAvailable || ts.hardcodedOnly {
 		if ts.skipVerify {
 			log.Println("Skipping verification as requested.")
@@ -365,6 +450,7 @@ func (ts *TargetScanner) verifyTargets(targets []TargetInfo) []TargetInfo {
 	}
 	
 	if !ts.verifyAll {
+		// Only verify common targets
 		commonOSes := map[string]bool{
 			"linux": true, "windows": true, "macosx": true, "freebsd": true,
 		}
@@ -381,6 +467,7 @@ func (ts *TargetScanner) verifyTargets(targets []TargetInfo) []TargetInfo {
 		return targets
 	}
 	
+	// Verify all targets with parallel processing
 	log.Printf("Verifying all %d targets (this may take a while)...", len(targets))
 	
 	const maxWorkers = 8
@@ -392,8 +479,8 @@ func (ts *TargetScanner) verifyTargets(targets []TargetInfo) []TargetInfo {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
+			semaphore <- struct{}{} // Acquire
+			defer func() { <-semaphore }() // Release
 			
 			verified := ts.verifyTarget(targets[idx].OS, targets[idx].CPU)
 			
@@ -494,6 +581,7 @@ func main() {
 		verifyAll     = flag.Bool("verify-all", false, "Verify all targets (slow)")
 		skipVerify    = flag.Bool("skip-verify", false, "Skip verification entirely")
 		hardcodedOnly = flag.Bool("hardcoded-only", false, "Use only hardcoded targets (no nim dependency)")
+		selfOnly      = flag.Bool("self", false, "Show only the host target (current OS/CPU)")
 		timeout       = flag.Duration("timeout", 30*time.Second, "Timeout for verification operations")
 		help          = flag.Bool("help", false, "Show help")
 	)
@@ -512,6 +600,7 @@ func main() {
 		fmt.Println("- If nim command is not found, only hardcoded targets are used")
 		fmt.Println("- Use --hardcoded-only to skip nim detection entirely")
 		fmt.Println("- Use --skip-verify to skip all verification steps")
+		fmt.Println("- Use --self to show only the current host target")
 		return
 	}
 	
@@ -524,6 +613,7 @@ func main() {
 	scanner.verifyAll = *verifyAll
 	scanner.skipVerify = *skipVerify
 	scanner.hardcodedOnly = *hardcodedOnly
+	scanner.selfOnly = *selfOnly
 	scanner.timeout = *timeout
 	
 	// Scan for targets
