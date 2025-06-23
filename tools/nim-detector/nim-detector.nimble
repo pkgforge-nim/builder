@@ -158,14 +158,11 @@ proc parseNimbleFile(path: string): tuple[binaries: seq[string], evidence: seq[s
   try:
     let config = loadConfig(path)
     
-    # Check for bin entries using getSectionValue
     try:
       let binStr = config.getSectionValue("", "bin")
       if binStr.len > 0:
         evidence.add("Found bin declaration in .nimble file")
-        # Parse different bin formats more efficiently
         if binStr.contains("@["):
-          # Array format: bin = @["app1", "app2"]
           var inQuotes = false
           var current = ""
           for ch in binStr:
@@ -180,18 +177,15 @@ proc parseNimbleFile(path: string): tuple[binaries: seq[string], evidence: seq[s
             elif inQuotes:
               current.add(ch)
         elif binStr.contains("\""):
-          # Single quoted format: bin = "app"
           let start = binStr.find('"')
           let stop = binStr.find('"', start + 1)
           if start != -1 and stop != -1:
             binaries.add(binStr[start+1..<stop])
         else:
-          # Simple format: bin = app
           binaries.add(binStr.strip())
     except:
       discard
     
-    # Check multiple fields more efficiently
     let fieldsToCheck = [
       ("binDir", "Found binDir in .nimble file: "),
       ("srcDir", "Found srcDir in .nimble file: "),
@@ -207,17 +201,14 @@ proc parseNimbleFile(path: string): tuple[binaries: seq[string], evidence: seq[s
       except:
         discard
     
-    # Check description for keywords more efficiently
     try:
       let description = config.getSectionValue("", "description")
       if description.len > 0:
         let descLower = description.toLowerAscii()
-        # Check CLI keywords
         for keyword in CLI_KEYWORDS:
           if keyword in descLower:
             evidence.add("Description suggests CLI tool")
             break
-        # Check library keywords
         for keyword in LIB_KEYWORDS:
           if keyword in descLower:
             evidence.add("Description suggests library")
@@ -242,7 +233,6 @@ proc analyzeNimFile(filePath: string): tuple[evidence: seq[string], isMain: bool
     let contentLower = content.toLowerAscii()
     let filename = extractFilename(filePath)
     
-    # Check for main module indicators
     if "when ismainmodule:" in contentLower:
       isMain = true
       evidence.add("Found 'when isMainModule:' in " & filename)
@@ -250,7 +240,6 @@ proc analyzeNimFile(filePath: string): tuple[evidence: seq[string], isMain: bool
     if "proc main(" in contentLower or "proc main*(" in contentLower:
       evidence.add("Found main procedure in " & filename)
     
-    # Enhanced CLI-related imports detection
     var foundCliImports: seq[string] = @[]
     for imp in CLI_IMPORTS:
       if ("import " & imp) in contentLower or ("from " & imp) in contentLower:
@@ -259,7 +248,6 @@ proc analyzeNimFile(filePath: string): tuple[evidence: seq[string], isMain: bool
     if foundCliImports.len > 0:
       evidence.add("Found CLI imports (" & foundCliImports.join(", ") & ") in " & filename)
     
-    # System interaction imports (often CLI tools)
     var systemImportCount = 0
     var foundSystemImports: seq[string] = @[]
     for imp in SYSTEM_IMPORTS:
@@ -270,7 +258,6 @@ proc analyzeNimFile(filePath: string): tuple[evidence: seq[string], isMain: bool
     if systemImportCount >= 2:
       evidence.add("Multiple system imports (" & foundSystemImports.join(", ") & ") suggest CLI tool")
     
-    # More efficient library indicators
     let lines = content.splitLines()
     var exportedProcs = 0
     var exportedTypes = 0
@@ -309,7 +296,6 @@ proc checkForMainModule(dir: string): tuple[hasMain: bool, evidence: seq[string]
   var evidence: seq[string] = @[]
   var hasMain = false
   
-  # Common locations for main files
   let packageName = extractFilename(dir)
   let mainCandidates = @[
     dir / "src" / packageName & ".nim",
@@ -320,7 +306,6 @@ proc checkForMainModule(dir: string): tuple[hasMain: bool, evidence: seq[string]
     dir / "src" / "app.nim"
   ]
   
-  # Check main candidates first (most likely)
   for candidate in mainCandidates:
     if fileExists(candidate):
       let (fileEvidence, isMainFile) = analyzeNimFile(candidate)
@@ -328,7 +313,6 @@ proc checkForMainModule(dir: string): tuple[hasMain: bool, evidence: seq[string]
       if isMainFile:
         hasMain = true
   
-  # Only check other files if no main found in candidates
   if not hasMain:
     let srcDir = dir / "src"
     if dirExists(srcDir):
@@ -338,7 +322,7 @@ proc checkForMainModule(dir: string): tuple[hasMain: bool, evidence: seq[string]
           evidence.add(fileEvidence)
           if isMainFile:
             hasMain = true
-            break  # Stop on first main found
+            break
   
   return (hasMain, evidence)
 
@@ -361,10 +345,8 @@ proc analyzePackage(packagePath: string): PackageInfo =
   info.evidence = @[]
   info.binaries = @[]
   
-  # Find all Nim files
   info.nimFiles = findNimFiles(packagePath)
   
-  # Check if .nimble file exists (more efficient)
   var nimbleFile = ""
   for file in walkDir(packagePath):
     if file.path.endsWith(".nimble"):
@@ -378,12 +360,10 @@ proc analyzePackage(packagePath: string): PackageInfo =
     info.binaries = binaries
     info.evidence.add(nimbleEvidence)
   
-  # Check for main module patterns
   let (hasMain, mainEvidence) = checkForMainModule(packagePath)
   info.hasMainModule = hasMain
   info.evidence.add(mainEvidence)
   
-  # Check directory structure efficiently
   let directories = ["tests", "test", "examples", "example", "docs", "doc", "src", "bin"]
   var dirFlags = newSeq[bool](directories.len)
   
@@ -405,31 +385,25 @@ proc analyzePackage(packagePath: string): PackageInfo =
   if hasBinDir:
     info.evidence.add("Found bin/ directory")
   
-  # Enhanced scoring algorithm
   var cliScore = 0.0
   var libScore = 0.0
   
-  # Binary declarations (strongest CLI indicator)
   if info.binaries.len > 0:
     cliScore += 5.0
     info.evidence.add("Strong CLI indicator: " & $info.binaries.len & " explicit binaries declared")
   
-  # Main module presence
   if info.hasMainModule:
     cliScore += 3.5
   
-  # Directory structure scoring
   if hasBinDir:
     cliScore += 2.5
   if hasSrcDir and not hasBinDir and info.nimFiles.len > 3:
     libScore += 1.5
   
-  # Nimble file analysis
   if info.nimbleExists and info.binaries.len == 0 and not info.hasMainModule:
     libScore += 2.5
     info.evidence.add("Nimble file without binaries suggests library")
   
-  # Evidence-based scoring (more efficient string matching)
   let evidenceText = info.evidence.join(" ").toLowerAscii()
   
   if "srcdir" in evidenceText:
@@ -447,7 +421,6 @@ proc analyzePackage(packagePath: string): PackageInfo =
   if "system import" in evidenceText:
     cliScore += 2.0
   
-  # File organization heuristics
   if info.nimFiles.len == 1 and info.hasMainModule:
     cliScore += 1.5
     info.evidence.add("Single file with main module suggests CLI tool")
@@ -455,7 +428,6 @@ proc analyzePackage(packagePath: string): PackageInfo =
     libScore += 1.5
     info.evidence.add("Multiple files without main module suggests library")
   
-  # Documentation and examples (libraries tend to have more)
   if info.hasTests:
     libScore += 0.7
   if info.hasExamples:
@@ -463,7 +435,6 @@ proc analyzePackage(packagePath: string): PackageInfo =
   if hasDocDir:
     libScore += 0.8
   
-  # Determine final type with improved logic
   let totalScore = cliScore + libScore
   if totalScore < 0.5:
     info.packageType = ptUnknown
@@ -488,13 +459,11 @@ proc findPackagesRecursive(rootPath: string): seq[string] =
   if not dirExists(rootPath):
     return packages
   
-  # Check if root is itself a package
   for file in walkDir(rootPath):
     if file.path.endsWith(".nimble"):
       packages.add(rootPath)
       break
   
-  # Look for packages in subdirectories
   for entry in walkDir(rootPath):
     if entry.kind == pcDir:
       let subPackages = findPackagesRecursive(entry.path)
@@ -554,20 +523,17 @@ proc outputTable(infos: seq[PackageInfo], config: AnalyzerConfig) =
     echo "No packages match the criteria."
     return
   
-  # Calculate column widths
-  var maxNameLen = 4  # "Name"
-  var maxTypeLen = 4  # "Type"
-  var maxPathLen = 4  # "Path"
+  var maxNameLen = 4
+  var maxTypeLen = 4
+  var maxPathLen = 4
   
   for info in filteredInfos:
     maxNameLen = max(maxNameLen, info.name.len)
     maxTypeLen = max(maxTypeLen, ($info.packageType).len)
     maxPathLen = max(maxPathLen, info.path.len)
   
-  # Limit path width for readability
   maxPathLen = min(maxPathLen, 50)
   
-  # Print header
   let extraSeparator = if config.verbose: "+" & "-".repeat(12) else: ""
   let separator =
     "+" & "-".repeat(maxNameLen + 2) &
@@ -586,8 +552,6 @@ proc outputTable(infos: seq[PackageInfo], config: AnalyzerConfig) =
   echo header
   echo separator
 
-  
-# Print rows
   for info in filteredInfos:
     let truncatedPath =
       if info.path.len > maxPathLen:
@@ -614,7 +578,7 @@ proc outputTable(infos: seq[PackageInfo], config: AnalyzerConfig) =
               " | " & truncatedPath.alignLeft(maxPathLen) &
               timeCol & " |"
 
-    echo row  # << This line should be inside the loop!
+    echo row
 
 
   
@@ -628,7 +592,7 @@ proc outputSummary(infos: seq[PackageInfo], config: AnalyzerConfig) =
     echo "No packages match the criteria."
     return
   
-  var typeCounts = [0, 0, 0, 0]  # library, cli, both, unknown
+  var typeCounts = [0, 0, 0, 0]
   var totalConfidence = 0.0
   var highConfidenceCount = 0
   
@@ -679,7 +643,6 @@ proc main() =
   
   var allPaths: seq[string] = @[]
   
-  # Collect all paths to analyze
   for path in config.paths:
     if not dirExists(path):
       stderr.writeLine("Warning: Directory does not exist: " & path)
@@ -698,7 +661,6 @@ proc main() =
     stderr.writeLine("Error: No valid directories found to analyze")
     quit(1)
   
-  # Analyze packages
   var packageInfos: seq[PackageInfo] = @[]
   let totalStartTime = cpuTime()
   
@@ -714,8 +676,7 @@ proc main() =
   if config.verbose and config.outputFormat != ofJson:
     stderr.writeLine("Total analysis time: " & $(round(totalTime * 1000, 2)) & "ms")
     stderr.writeLine("")
-  
-  # Output results
+
   case config.outputFormat:
   of ofJson:
     outputJson(packageInfos, config)
