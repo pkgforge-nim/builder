@@ -47,6 +47,7 @@ type TargetScanner struct {
 	knownCPUs  []string
 	
 	// Options
+	debugMode      bool
 	verifyAll      bool
 	skipVerify     bool
 	hardcodedOnly  bool
@@ -157,13 +158,63 @@ func (ts *TargetScanner) getHostTarget() (string, string) {
 	return hostOS, hostCPU
 }
 
-func (ts *TargetScanner) checkNimAvailable() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+func debugEnvironment() {
+	log.Printf("PATH from Go: %s", os.Getenv("PATH"))
 	
+	// Try to find nim using LookPath
+	nimPath, err := exec.LookPath("nim")
+	if err != nil {
+		log.Printf("exec.LookPath('nim') failed: %v", err)
+	} else {
+		log.Printf("exec.LookPath('nim') found: %s", nimPath)
+	}
+}
+
+func (ts *TargetScanner) checkNimAvailable() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Increased timeout
+	defer cancel()
+
+    if ts.debugMode {
+	   debugEnvironment()
+	}
+
 	cmd := exec.CommandContext(ctx, "nim", "--version")
-	err := cmd.Run()
-	return err == nil
+	
+	// Explicitly inherit environment variables
+	cmd.Env = os.Environ()
+	
+	// Get both stdout and stderr
+	output, err := cmd.CombinedOutput()
+	
+	// Debug logging
+	if err != nil {
+		log.Printf("nim --version failed: %v", err)
+		log.Printf("Command output: %s", string(output))
+		
+		// Try to distinguish between "command not found" and other errors
+		if strings.Contains(err.Error(), "executable file not found") || 
+		   strings.Contains(err.Error(), "no such file or directory") {
+			log.Println("nim executable not found in PATH")
+		} else {
+			log.Printf("nim command exists but failed with: %v", err)
+		}
+		return false
+	}
+	
+	// Check if output looks like a version string
+	outputStr := strings.ToLower(string(output))
+
+	
+	  if strings.Contains(outputStr, "nim") && 
+	       (strings.Contains(outputStr, "version") || strings.Contains(outputStr, "compiler")) {
+		  if ts.debugMode {	
+	  	    log.Printf("nim available: %s", strings.TrimSpace(string(output)))
+		  }	
+	  	  return true
+	  }
+	
+	log.Printf("nim command ran but output doesn't look like version info: %s", string(output))
+	return false
 }
 
 func (ts *TargetScanner) parseHelpOutput(output string, targetType string) []string {
@@ -344,6 +395,9 @@ func (ts *TargetScanner) scanTargets() []TargetInfo {
 	var targets []TargetInfo
 	osSet := make(map[string]string) // os -> source
 	cpuSet := make(map[string]string) // cpu -> source
+
+	// Check if nim is available
+	ts.nimAvailable = ts.checkNimAvailable()
 	
 	// If self-only mode, just return the host target
 	if ts.selfOnly {
@@ -362,9 +416,6 @@ func (ts *TargetScanner) scanTargets() []TargetInfo {
 			Command: fmt.Sprintf("nim --os:%s --cpu:%s", hostOS, hostCPU),
 		}}
 	}
-	
-	// Check if nim is available
-	ts.nimAvailable = ts.checkNimAvailable()
 	
 	if !ts.nimAvailable {
 		log.Println("Warning: 'nim' command not found. Using hardcoded target list only.")
@@ -443,7 +494,7 @@ func (ts *TargetScanner) verifyTargets(targets []TargetInfo) []TargetInfo {
 			log.Println("Skipping verification as requested.")
 		} else if ts.hardcodedOnly {
 			log.Println("Skipping verification - hardcoded-only mode.")
-		} else {
+		} else if !ts.nimAvailable {
 			log.Println("Skipping verification - nim command not available.")
 		}
 		return targets
@@ -582,6 +633,7 @@ func main() {
 		skipVerify    = flag.Bool("skip-verify", false, "Skip verification entirely")
 		hardcodedOnly = flag.Bool("hardcoded-only", false, "Use only hardcoded targets (no nim dependency)")
 		selfOnly      = flag.Bool("self", false, "Show only the host target (current OS/CPU)")
+		debugMode     = flag.Bool("debug", false, "Print Debug Information (PATH etc)")
 		timeout       = flag.Duration("timeout", 30*time.Second, "Timeout for verification operations")
 		help          = flag.Bool("help", false, "Show help")
 	)
@@ -589,7 +641,7 @@ func main() {
 	flag.Parse()
 	
 	if *help {
-		fmt.Println("Usage: nim-targets [options]")
+		fmt.Println("Usage: nim-targetlist [options]")
 		fmt.Println("\nOptions:")
 		flag.PrintDefaults()
 		fmt.Println("\nThis tool scans for available Nim compilation targets by:")
@@ -613,6 +665,7 @@ func main() {
 	scanner.verifyAll = *verifyAll
 	scanner.skipVerify = *skipVerify
 	scanner.hardcodedOnly = *hardcodedOnly
+	scanner.debugMode = *debugMode
 	scanner.selfOnly = *selfOnly
 	scanner.timeout = *timeout
 	
